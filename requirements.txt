@@ -1,3 +1,4 @@
+# Despliegue 2026-11-06: nueva interfaz y cotizacion previa; reconstruir el servicio.
 streamlit==1.67.0
 fastapi==0.162.0
 httpx==0.28.1
