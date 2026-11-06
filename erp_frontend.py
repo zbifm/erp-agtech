@@ -30,6 +30,13 @@ st.markdown("""<style>
 [data-testid="stMetricValue"] {font-size:clamp(1.35rem,2.1vw,2rem);}
 [data-testid="stMetricValue"] > div {white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;}
 [data-testid="stSidebar"] h1 {font-size:1.65rem;}
+.st-key-navegacion_principal {gap:.25rem;}
+.st-key-navegacion_principal button {justify-content:flex-start;text-align:left;}
+.st-key-navegacion_principal button > div {justify-content:flex-start;padding-left:.75rem;}
+.st-key-navegacion_principal button p {text-align:left;}
+.st-key-navegacion_principal [data-testid="stMarkdownContainer"] {margin-bottom:0;}
+.st-key-navegacion_principal .agtech-nav-group {font-size:.72rem;font-weight:700;
+ letter-spacing:.09em;text-transform:uppercase;opacity:.75;padding:.6rem 0 .15rem;margin:0;}
 .stButton button,.stDownloadButton button {border-radius:9px;min-height:2.6rem;}
 .stTabs [role="tab"] {font-weight:600;}
 @media(max-width:640px){.block-container{padding:5rem 1rem 2rem;}.agtech-hero{padding:1.2rem;}}
@@ -119,6 +126,26 @@ def ir_a_modulo(module):
     st.session_state.modulo_activo = module
 
 
+# Los identificadores se conservan para los permisos, atajos y sesiones existentes.
+NAVEGACION = [
+    (None, [("Inicio", "Inicio", "home", ())]),
+    ("Operación", [
+        ("Punto de venta", "Punto de venta", "point_of_sale", ("tpv",)),
+        ("Inventario y productos", "Inventario", "inventory_2", ("inventario",)),
+    ]),
+    ("Análisis", [
+        ("Finanzas y tendencias", "Finanzas", "monitoring", ("simulador",)),
+        ("Ingeniería y presupuestos", "Presupuestos", "construction", ("ingenieria",)),
+    ]),
+    ("Administración", [
+        ("Sedes y ubicación", "Sedes y ubicación", "location_on", ("registrar_sede",)),
+        ("Personal y usuarios", "Personal y accesos", "group", ("personal", "usuarios")),
+        ("Configuración", "Configuración", "settings", ("usuarios",)),
+    ]),
+]
+ETIQUETAS_MODULOS = {module: label for _, items in NAVEGACION for module, label, _, _ in items}
+
+
 def nombre_presupuesto(value):
     return {"P1_ECONOMICO": "Kit económico · ESP32", "P2_OBJETIVO": "Kit objetivo · Radxa", "P3_PREMIUM": "Kit premium · Raspberry Pi"}.get(value, value)
 
@@ -191,14 +218,6 @@ datos_presupuestos = api("GET", "/ingenieria/presupuestos-tabulares", default={}
 
 with st.sidebar:
     st.title("🌱 AgTech")
-    st.caption(f"{st.session_state.username} · {st.session_state.rol}")
-    if st.button("Cerrar sesión", width="stretch"):
-        request("POST", "/auth/logout", quiet=True)
-        client = st.session_state.api_client
-        st.session_state.clear()
-        st.session_state.api_client = client
-        st.rerun()
-    st.divider()
     if negocios_db:
         nueva_sede = st.session_state.pop("seleccionar_sede_nueva", None)
         if nueva_sede in negocios_db:
@@ -210,26 +229,24 @@ with st.sidebar:
     else:
         sucursal_activa_id, datos_sucursal = None, None
         st.warning("Registra una sede para comenzar.")
-    menu = ["Inicio"]
-    if "tpv" in permisos_usuario:
-        menu.append("Punto de venta")
-    if "inventario" in permisos_usuario:
-        menu.append("Inventario y productos")
-    if "registrar_sede" in permisos_usuario:
-        menu.append("Sedes y ubicación")
-    if "simulador" in permisos_usuario:
-        menu.append("Finanzas y tendencias")
-    if "ingenieria" in permisos_usuario:
-        menu.append("Ingeniería y presupuestos")
-    if "personal" in permisos_usuario or "usuarios" in permisos_usuario:
-        menu.append("Personal y usuarios")
-    if "usuarios" in permisos_usuario:
-        menu.append("Configuración")
+    grupos_visibles = [(group, [item for item in items if not item[3] or any(p in permisos_usuario for p in item[3])])
+                      for group, items in NAVEGACION]
+    menu = [item[0] for _, items in grupos_visibles for item in items]
     if st.session_state.get("modulo_activo") not in menu:
         st.session_state.modulo_activo = "Inicio"
-    pagina = st.radio("Módulos", menu, key="modulo_activo")
+    pagina = st.session_state.modulo_activo
+    with st.container(key="navegacion_principal"):
+        for group, items in grupos_visibles:
+            if not items:
+                continue
+            if group:
+                st.markdown(f'<h3 class="agtech-nav-group">{group}</h3>', unsafe_allow_html=True)
+            for module, label, icon, _ in items:
+                st.button(label, key=f"nav_{module}", icon=f":material/{icon}:",
+                          type="primary" if pagina == module else "tertiary",
+                          help="Página actual" if pagina == module else None,
+                          on_click=ir_a_modulo, args=(module,), width="stretch")
     st.divider()
-    st.caption("MODO ACADÉMICO · Operaciones con datos de demostración. Inventario central compartido entre sedes.")
     if "exportar" in permisos_usuario:
         if st.button("Preparar reporte Excel", width="stretch"):
             result = request("GET", "/exportar/excel")
@@ -238,6 +255,15 @@ with st.sidebar:
         if st.session_state.get("excel_data"):
             st.download_button("Descargar Excel", st.session_state.excel_data, "Reporte_ERP_AgTech.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
             st.caption("Vuelve a preparar el reporte después de registrar cambios.")
+    with st.expander("Tu cuenta y la demostración"):
+        st.caption(f"{st.session_state.username} · {st.session_state.rol}")
+        st.caption("MODO ACADÉMICO · Usa datos ficticios. El inventario es compartido entre sedes.")
+        if st.button("Cerrar sesión", width="stretch"):
+            request("POST", "/auth/logout", quiet=True)
+            client = st.session_state.api_client
+            st.session_state.clear()
+            st.session_state.api_client = client
+            st.rerun()
 
 descriptions = {
     "Inicio": "Tu operación de un vistazo. Elige una tarea para empezar.",
@@ -249,7 +275,10 @@ descriptions = {
     "Personal y usuarios": "Organiza tu equipo y decide quién puede entrar a cada módulo.",
     "Configuración": "Ajusta los valores de demostración y descarga una copia de tus datos.",
 }
-hero(pagina, descriptions[pagina])
+grupo_activo = next(group for group, items in grupos_visibles if any(item[0] == pagina for item in items))
+if grupo_activo:
+    st.caption(f"Estás en: {grupo_activo} / {ETIQUETAS_MODULOS[pagina]}")
+hero(ETIQUETAS_MODULOS[pagina], descriptions[pagina])
 if st.session_state.get("flash"):
     st.success(st.session_state.pop("flash"))
 
@@ -274,12 +303,12 @@ if pagina == "Inicio":
             with column, st.container(border=True):
                 st.markdown(f"**{label}**")
                 st.caption(description)
-                st.button(f"Abrir {module.lower()}", key=f"atajo_{module}", on_click=ir_a_modulo, args=(module,), width="stretch")
+                st.button(f"Abrir {ETIQUETAS_MODULOS[module].lower()}", key=f"atajo_{module}", on_click=ir_a_modulo, args=(module,), width="stretch")
     if low_products:
-        accion_reorden = "Revisa sus existencias en Inventario y productos." if "inventario" in permisos_usuario else "Avisa al gerente para reabastecerlos."
+        accion_reorden = "Revisa sus existencias en Operación → Inventario." if "inventario" in permisos_usuario else "Avisa al gerente para reabastecerlos."
         st.warning(f"{len(low_products)} productos llegaron al punto de reorden. {accion_reorden}")
     with st.expander("Guía rápida para la demostración", expanded=False):
-        st.markdown("1. Usa la sede de ejemplo o registra otra en **Sedes y ubicación**.\n2. Revisa productos y existencias en **Inventario y productos**.\n3. En **Punto de venta**, alterna dentro/fuera del radio para demostrar el bloqueo.\n4. Vuelve dentro, revisa el total y registra una venta.\n5. Descarga el ticket y consulta **Finanzas y tendencias**.")
+        st.markdown("1. Usa la sede de ejemplo o registra otra en **Administración → Sedes y ubicación**.\n2. Revisa productos y existencias en **Operación → Inventario**.\n3. En **Operación → Punto de venta**, alterna dentro/fuera del radio para demostrar el bloqueo.\n4. Vuelve dentro, revisa el total y registra una venta.\n5. Descarga el ticket y consulta **Análisis → Finanzas**.")
         st.caption("Las opciones disponibles dependen de tu perfil. El gerente puede explorar todos los módulos.")
     with st.expander("Qué se guarda y qué se simula"):
         st.markdown("**Se guarda:** ventas, inventario, sedes, personal y cuentas de usuario.\n\n**Se simula:** ubicación GPS, lector de códigos, pagos, facturación fiscal y escenarios financieros. Los comprobantes se descargan para imprimir desde el navegador.")
@@ -906,7 +935,7 @@ if pagina == "Configuración":
         b.metric("Flete y otros gastos", money(freight + extra))
         c.metric("Costo unitario estimado sin IVA", money(converted + freight + extra))
         st.caption("Cálculo: compra en dólares × tipo de cambio + flete + otros gastos en pesos.")
-        st.info("Para aplicar estos datos a un producto: ve a Inventario y productos → Editar producto → Origen y costo de importación. Selecciona USD, escribe el precio original en dólares y suma el flete y los otros gastos en pesos.")
+        st.info("Para aplicar estos datos a un producto: ve a Operación → Inventario → Editar producto → Origen y costo de importación. Selecciona USD, escribe el precio original en dólares y suma el flete y los otros gastos en pesos.")
     with backup_tab:
         st.subheader("Conserva una copia de tus registros")
         st.caption("Incluye sedes, ventas, inventario, movimientos, personal y parámetros. No incluye cuentas, contraseñas ni sesiones.")
