@@ -3,6 +3,7 @@ import base64
 import html
 import io
 import json
+import math
 import uuid
 
 import streamlit as st
@@ -24,6 +25,25 @@ for key, value in {"autenticado": False, "token": "", "username": "", "permisos"
     st.session_state.setdefault(key, value)
 if "api_client" not in st.session_state:
     st.session_state.api_client = APIClient()
+if "posicion_cajero" not in st.session_state:
+    # Esta pareja no pertenece a un widget: se conserva al cambiar de módulo.
+    st.session_state.posicion_cajero = (st.session_state.operador_lat, st.session_state.operador_lon)
+
+
+def reiniciar_mapa_cajero():
+    # Una clave nueva descarta last_clicked del mapa anterior al editar o centrar.
+    st.session_state.mapa_cajero_revision = st.session_state.get("mapa_cajero_revision", 0) + 1
+
+
+def fijar_posicion_cajero(latitud, longitud):
+    st.session_state.posicion_cajero = (float(latitud), float(longitud))
+    st.session_state.operador_lat = float(latitud)
+    st.session_state.operador_lon = float(longitud)
+    reiniciar_mapa_cajero()
+
+
+def cambiar_coordenadas_cajero():
+    fijar_posicion_cajero(st.session_state.operador_lat, st.session_state.operador_lon)
 
 
 def request(method, path, *, quiet=False, **kwargs):
@@ -236,7 +256,7 @@ if pagina == "Sedes y ubicación":
                 "latitud": lat, "longitud": lon, "radio_operacion_km": radius, "presupuesto_seleccionado": pres,
                 "inversion_inicial": capex, "costos_fijos_mensuales": fixed, "costo_variable_unitario": variable, "precio_venta_unitario": price})
             if result:
-                st.session_state.operador_lat, st.session_state.operador_lon = lat, lon
+                fijar_posicion_cajero(lat, lon)
                 finish("Sede registrada correctamente.")
     st.subheader("Sedes registradas")
     table(list(negocios_db.values()))
@@ -246,14 +266,60 @@ if pagina == "Punto de venta":
         st.info("El gerente debe registrar una sede antes de operar caja.")
     else:
         st.caption(f"Sede: {datos_sucursal['nombre']}. Los precios y el stock se verifican en el servidor al cobrar; el IVA se agrega al precio de catálogo.")
+        st.session_state.operador_lat, st.session_state.operador_lon = st.session_state.posicion_cajero
+        if st.session_state.get("mapa_cajero_sede") != sucursal_activa_id:
+            st.session_state.mapa_cajero_sede = sucursal_activa_id
+            reiniciar_mapa_cajero()
         with st.expander("Ubicación del cajero · GPS simulado", expanded=True):
+            st.caption("Haz clic en el mapa para marcar la ubicación simulada del cajero. El círculo verde es el radio permitido de la sede. Esta selección no detecta la ubicación real del equipo.")
             if st.button("Centrar ubicación en la sede"):
-                st.session_state.operador_lat = float(datos_sucursal["latitud"])
-                st.session_state.operador_lon = float(datos_sucursal["longitud"])
+                fijar_posicion_cajero(datos_sucursal["latitud"], datos_sucursal["longitud"])
                 st.rerun()
+            if st.checkbox("Mostrar mapa del cajero", value=True, key="mostrar_mapa_cajero", on_change=reiniciar_mapa_cajero):
+                sede_lat, sede_lon = float(datos_sucursal["latitud"]), float(datos_sucursal["longitud"])
+                cajero_lat, cajero_lon = st.session_state.posicion_cajero
+                radio_km = float(datos_sucursal["radio_operacion_km"])
+                mapa_cajero = folium.Map(location=[sede_lat, sede_lon], zoom_start=12, control_scale=True)
+                folium.Circle(
+                    [sede_lat, sede_lon], radius=radio_km * 1000,
+                    color="#169B62", fill=True, fill_opacity=0.12,
+                    tooltip=f"Radio permitido: {radio_km:g} km",
+                ).add_to(mapa_cajero)
+                folium.Marker(
+                    [sede_lat, sede_lon], tooltip=f"Sede: {html.escape(datos_sucursal['nombre'])}",
+                    icon=folium.Icon(color="green", icon="home"),
+                ).add_to(mapa_cajero)
+                folium.CircleMarker(
+                    [cajero_lat, cajero_lon], radius=9, color="#1647B0",
+                    fill=True, fill_color="#4C8EFF", fill_opacity=1,
+                    tooltip="Cajero: ubicación simulada seleccionada",
+                ).add_to(mapa_cajero)
+                # Incluir el radio y el cajero en el encuadre inicial.
+                lat_delta = radio_km / 110.574
+                lon_delta = min(180.0, radio_km / (111.320 * max(abs(math.cos(math.radians(sede_lat))), 0.01)))
+                mapa_cajero.fit_bounds([
+                    [max(-90.0, min(sede_lat - lat_delta, cajero_lat)), max(-180.0, min(sede_lon - lon_delta, cajero_lon))],
+                    [min(90.0, max(sede_lat + lat_delta, cajero_lat)), min(180.0, max(sede_lon + lon_delta, cajero_lon))],
+                ], padding=(25, 25), max_zoom=16)
+                seleccion = st_folium(
+                    mapa_cajero, height=380, use_container_width=True,
+                    returned_objects=["last_clicked"],
+                    key=f"mapa_cajero_{sucursal_activa_id}_{st.session_state.mapa_cajero_revision}",
+                )
+                clic = (seleccion or {}).get("last_clicked")
+                if clic:
+                    try:
+                        nueva_lat, nueva_lon = float(clic["lat"]), float(clic["lng"])
+                        valida = math.isfinite(nueva_lat) and math.isfinite(nueva_lon) and -90 <= nueva_lat <= 90 and -180 <= nueva_lon <= 180
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        valida = False
+                    if valida and (nueva_lat, nueva_lon) != st.session_state.posicion_cajero:
+                        fijar_posicion_cajero(nueva_lat, nueva_lon)
+                        st.rerun()
+                st.caption("Verde: sede y geocerca · Azul: cajero. Si el mapa no carga por falta de conexión, usa los campos de coordenadas.")
             a, b = st.columns(2)
-            lat_operador = a.number_input("Latitud del cajero", -90.0, 90.0, key="operador_lat", format="%.5f")
-            lon_operador = b.number_input("Longitud del cajero", -180.0, 180.0, key="operador_lon", format="%.5f")
+            lat_operador = a.number_input("Latitud del cajero", -90.0, 90.0, key="operador_lat", format="%.5f", on_change=cambiar_coordenadas_cajero)
+            lon_operador = b.number_input("Longitud del cajero", -180.0, 180.0, key="operador_lon", format="%.5f", on_change=cambiar_coordenadas_cajero)
             geo = api("POST", "/negocios/validar-geocerca", default={}, json={"negocio_id": sucursal_activa_id, "latitud_operador": lat_operador, "longitud_operador": lon_operador})
             allowed = geo.get("operacion_permitida", False)
             (st.success if allowed else st.error)(geo.get("mensaje", "No se pudo validar la ubicación."))
