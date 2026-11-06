@@ -202,6 +202,25 @@ def finish(message):
     st.rerun()
 
 
+def creditos_foto(product):
+    if product.get("foto_descripcion"):
+        st.caption(product["foto_descripcion"])
+    if product.get("foto_fuente"):
+        st.link_button("Fuente de la fotografía", product["foto_fuente"])
+    credit = " · ".join(str(product[k]) for k in ("foto_autor", "foto_licencia") if product.get(k))
+    if credit:
+        st.caption(credit)
+
+
+@st.fragment(run_every=300)
+def sincronizar_tipo_cambio():
+    # Revisa la caché al entrar y cada cinco minutos con la sesión abierta.
+    # El servicio consulta al proveedor como máximo cada seis horas.
+    result = api("GET", "/datos-externos/tipo-cambio", default={}, quiet=True)
+    if result:
+        st.session_state.cambio_externo = result
+
+
 if not st.session_state.autenticado:
     hero("Gestiona tu negocio con AgTech", "Vende, controla existencias y explora la rentabilidad desde un mismo lugar.")
     left, right = st.columns([1, 1])
@@ -240,6 +259,7 @@ if not me:
 st.session_state.permisos = me.get("permisos", st.session_state.permisos)
 st.session_state.rol = me.get("rol", st.session_state.rol)
 permisos_usuario = st.session_state.permisos
+sincronizar_tipo_cambio()
 negocios_db = api("GET", "/negocios", default={})
 datos_inventario = api("GET", "/inventario/componentes", default={})
 catalogo_comp = datos_inventario.get("catalogo_diccionario", {})
@@ -302,7 +322,7 @@ descriptions = {
     "Finanzas y tendencias": "Consulta resultados registrados o prueba escenarios de inversión.",
     "Ingeniería y presupuestos": "Compara alternativas de equipamiento y conoce cómo se produce cada kit.",
     "Personal y usuarios": "Organiza tu equipo y decide quién puede entrar a cada módulo.",
-    "Configuración": "Ajusta los valores de demostración y descarga una copia de tus datos.",
+    "Configuración": "Consulta el tipo de cambio, ajusta el IVA y conserva una copia de tus datos.",
 }
 grupo_activo = next(group for group, items in grupos_visibles if any(item[0] == pagina for item in items))
 if grupo_activo:
@@ -675,10 +695,10 @@ if pagina == "Inventario y productos":
     a.metric("Productos en catálogo", len(catalogo_comp))
     b.metric("Productos por reabastecer", len(low), help="Su existencia llegó al punto de reorden: el nivel mínimo elegido para volver a comprar.")
     c.metric("Valor del inventario al costo", f"${sum(p['stock'] * p['costo_unitario'] for p in catalogo_comp.values()):,.2f}", help="Valor en MXN: existencias por costo actual. No es dinero cobrado ni utilidad.")
-    catalog_tab, edit_tab, stock_tab = st.tabs(["Catálogo y alertas", "Editar producto", "Entradas y salidas"])
+    catalog_tab, add_tab, edit_tab, stock_tab = st.tabs(["Catálogo y alertas", "Agregar producto", "Editar producto", "Entradas y salidas"])
     with catalog_tab:
         if not catalogo_comp:
-            empty_state("El catálogo está vacío", "Consulta con el gerente antes de operar. Cuando haya productos registrados podrás buscar sus existencias, precios y alertas en esta pantalla.")
+            empty_state("El catálogo está vacío", "Abre Agregar producto para registrar tu primer artículo, su precio y sus existencias iniciales.")
         elif low:
             insight("Hay productos que necesitan reposición", f"{len(low)} de {len(catalogo_comp)} productos llegaron a su nivel mínimo. Activa Solo por reabastecer y registra la compra en Entradas y salidas.", tone="warning")
         section_intro("Encuentra un producto", "La lista muestra lo necesario para operar. Los costos y códigos están en el detalle ampliado.")
@@ -695,25 +715,67 @@ if pagina == "Inventario y productos":
             if category_filter != "Todas" and item["categoria"] != category_filter:
                 continue
             state = "Sin existencias" if item["stock"] == 0 else "Reabastecer" if needs_stock else "Disponible"
-            catalog_rows.append({"Producto": item["nombre"], "Categoría": item["categoria"], "Existencias": item["stock"],
+            catalog_rows.append({"Foto": item.get("foto_url", "") or None, "Producto": item["nombre"], "Categoría": item["categoria"], "Existencias": item["stock"],
                 "Estado": state, "Punto de reorden": item.get("punto_reorden", 0),
                 "Costo unitario (MXN)": item["costo_unitario"], "Precio sin IVA (MXN)": item["precio_publico"],
                 "Código de barras": item.get("codigo_barras", product_id)})
         if catalog_rows:
             catalog_rows.sort(key=lambda row: ({"Sin existencias": 0, "Reabastecer": 1, "Disponible": 2}[row["Estado"]], row["Producto"]))
             st.caption(f"{len(catalog_rows)} de {len(catalogo_comp)} productos · Primero aparecen los que requieren atención.")
-            compact_rows = [{"Producto": row["Producto"], "Existencias": row["Existencias"],
+            compact_rows = [{"Foto": row["Foto"], "Producto": row["Producto"], "Existencias": row["Existencias"],
                 "Estado": {"Sin existencias": "🔴 Sin existencias", "Reabastecer": "🟠 Reabastecer", "Disponible": "🟢 Disponible"}[row["Estado"]],
                 "Precio sin IVA (MXN)": row["Precio sin IVA (MXN)"]} for row in catalog_rows]
-            st.dataframe(pd.DataFrame(compact_rows), width="stretch", hide_index=True, column_config={
+            st.dataframe(pd.DataFrame(compact_rows), width="stretch", hide_index=True, row_height=72, column_config={
+                "Foto": st.column_config.ImageColumn("Foto", width=90, help="Doble clic para ampliar. Puedes cambiar o quitar la foto en Editar producto."),
                 "Existencias": st.column_config.ProgressColumn("Existencias", min_value=0, max_value=max(1, max(row["Existencias"] for row in catalog_rows)), format="%d"),
                 "Precio sin IVA (MXN)": st.column_config.NumberColumn(format="$%.2f"),
             })
             st.caption("La barra compara cantidades disponibles; el estado indica si alcanzaron el mínimo de reposición.")
             with st.expander("Ver costos, categorías, mínimos y códigos"):
-                table(catalog_rows)
+                table([{k: v for k, v in row.items() if k != "Foto"} for row in catalog_rows])
         elif catalogo_comp:
             empty_state("No hay coincidencias", "Borra la búsqueda o elige Todas las categorías. Desactiva Solo por reabastecer para volver a ver el catálogo completo.")
+    with add_tab:
+        section_intro("Registra un producto", "Quedará disponible en el catálogo y en Punto de venta. El código de barras se genera si lo dejas vacío.")
+        with st.form("alta_producto", clear_on_submit=False):
+            a, b = st.columns([2, 1])
+            new_name = a.text_input("Nombre del nuevo producto", max_chars=200)
+            new_category = b.selectbox("Categoría del nuevo producto", ["Sensor", "Placa Base", "Almacenamiento", "Producción/Chasis", "Accesorio", "Otro"])
+            new_specs = st.text_area("Descripción o especificaciones", max_chars=2000, height=80)
+            a, b, c = st.columns(3)
+            new_currency = a.selectbox("Moneda de compra del nuevo producto", ["MXN", "USD"])
+            new_cost = b.number_input("Costo de compra por unidad", min_value=0.0, max_value=1e9, value=0.0, help="En la moneda elegida: pesos o dólares.")
+            new_freight = c.number_input("Gastos por unidad en MXN", min_value=0.0, max_value=1e9, value=0.0, help="Flete y otros gastos adicionales; se suman al costo de compra.")
+            a, b, c = st.columns(3)
+            new_price = a.number_input("Precio de venta del nuevo producto sin IVA (MXN)", min_value=0.01, max_value=1e9, value=100.0)
+            new_stock = b.number_input("Existencias iniciales", min_value=0, max_value=1000000, value=0)
+            new_reorder = c.number_input("Mínimo para reabastecer", min_value=0, max_value=1000000, value=20)
+            new_barcode = st.text_input("Código de barras (opcional)", max_chars=60, help="Letras, números, guion o guion bajo. No se permiten códigos repetidos.")
+            with st.expander("Agregar fotografía (opcional)"):
+                new_link = st.text_input("Enlace de la foto del nuevo producto (https)")
+                new_upload = st.file_uploader("Foto del nuevo producto (PNG/JPG, máximo 1 MB)", type=["png", "jpg", "jpeg"], key="foto_nuevo_producto")
+                st.caption("Elige un archivo o un enlace. Después podrás reemplazar o quitar la imagen desde Editar producto.")
+            st.caption("Los productos comprados en USD usan el tipo de cambio guardado. Las existencias iniciales generan un movimiento de inventario.")
+            if st.form_submit_button("Registrar producto", type="primary"):
+                if not new_name.strip():
+                    st.error("Escribe el nombre del producto.")
+                elif new_upload and new_upload.size > 1_000_000:
+                    st.error("La imagen supera 1 MB. Reduce su tamaño antes de cargarla.")
+                elif new_upload and new_link.strip():
+                    st.error("Elige un archivo o un enlace para la foto, no ambos.")
+                else:
+                    new_photo = new_link.strip()
+                    if new_upload:
+                        new_photo = f"data:{new_upload.type};base64," + base64.b64encode(new_upload.getvalue()).decode("ascii")
+                    payload = {"nombre": new_name.strip(), "categoria": new_category, "especificaciones": new_specs,
+                        "moneda_origen": new_currency, "costo_origen": new_cost, "costo_unitario": new_cost,
+                        "gastos_importacion_unitarios": new_freight, "precio_publico": new_price,
+                        "stock_inicial": int(new_stock), "punto_reorden": int(new_reorder), "foto_url": new_photo}
+                    if new_barcode.strip():
+                        payload["codigo_barras"] = new_barcode.strip()
+                    created = api("POST", "/inventario/componentes", json=payload)
+                    if created:
+                        finish(f"Producto registrado: {new_name.strip()}. Ya puedes buscarlo en el catálogo y venderlo como refacción.")
     if catalogo_comp:
         with edit_tab:
             section_intro("1 · Elige el producto", "Consulta su estado actual y cambia sólo los campos que necesitas. Los cambios se aplican al pulsar Guardar producto.")
@@ -727,6 +789,10 @@ if pagina == "Inventario y productos":
             if margin is not None and margin < 0:
                 st.warning("El precio está por debajo del costo: cada unidad vendida genera una pérdida bruta.")
             with st.form("producto_detalle"):
+                a, b = st.columns([2, 1])
+                product_name = a.text_input("Nombre del producto", product["nombre"], key=f"nombre_producto_{pid}")
+                product_category = b.text_input("Categoría", product["categoria"], key=f"categoria_producto_{pid}")
+                product_specs = st.text_area("Especificaciones", product.get("especificaciones", ""), height=80, key=f"especificaciones_producto_{pid}")
                 section_intro("2 · Ajusta precio y reposición", "El costo es lo que pagas; el precio sin IVA es lo que cobras antes del impuesto.")
                 a, b, c = st.columns(3)
                 cost = a.number_input("Costo unitario en MXN", min_value=0.0, value=float(product["costo_unitario"]), disabled=product.get("moneda_origen") == "USD", key=f"costo_producto_{pid}")
@@ -749,7 +815,7 @@ if pagina == "Inventario y productos":
                         photo = "" if remove_photo else (photo_link.strip() or product.get("foto_url", ""))
                         if upload:
                             photo = f"data:{upload.type};base64," + base64.b64encode(upload.getvalue()).decode("ascii")
-                        result = api("PUT", f"/inventario/componentes/{pid}", json={"costo_unitario": cost, "precio_publico": price, "punto_reorden": reorder, "codigo_barras": barcode, "foto_url": photo})
+                        result = api("PUT", f"/inventario/componentes/{pid}", json={"nombre": product_name, "categoria": product_category, "especificaciones": product_specs, "costo_unitario": cost, "precio_publico": price, "punto_reorden": reorder, "codigo_barras": barcode, "foto_url": photo})
                         if result:
                             finish("Producto actualizado.")
             with st.expander("Origen y costo de importación"):
@@ -770,6 +836,7 @@ if pagina == "Inventario y productos":
                 with a:
                     if product.get("foto_url"):
                         st.image(product["foto_url"], caption=product["nombre"], width=220)
+                        creditos_foto(product)
                     else:
                         st.info("Este producto todavía no tiene foto. Abre Cambiar foto (opcional) en el formulario de edición para añadirla.")
                 with b:
@@ -818,7 +885,7 @@ if pagina == "Finanzas y tendencias":
         empty_state("Selecciona una sede para comenzar", "Elige una sede en el menú lateral. Si aún no hay ninguna, el gerente puede crearla en Administración → Sedes y ubicación.")
     else:
         st.caption(f"Sede: {datos_sucursal['nombre']} · Importes en pesos mexicanos (MXN).")
-        ventas_tab, escenario_tab, tendencia_tab = st.tabs(["Ventas registradas", "Simular inversión", "Tendencia de ejemplo"])
+        ventas_tab, escenario_tab, tendencia_tab = st.tabs(["Ventas registradas", "Simular inversión", "Mercado agrícola"])
         report = api("GET", f"/analisis/reportes/{sucursal_activa_id}", default={})
         metrics = report.get("indicadores", {})
         series = report.get("series_mensuales", [])
@@ -935,20 +1002,44 @@ if pagina == "Finanzas y tendencias":
                             st.warning(warning)
                     st.caption("Modelo simplificado: tres flujos anuales iguales. No incluye financiamiento, depreciación, ISR ni valor residual. Los resultados dependen de los supuestos capturados.")
         with tendencia_tab:
-            section_intro("Aprende a leer una tendencia", "Datos inventados para el ejercicio: esta gráfica no representa ventas registradas, un estudio de mercado ni una predicción.")
-            trends = report.get("tendencias_simuladas", [])
-            if trends:
-                trend_frame = pd.DataFrame(trends).rename(columns={"mes": "Mes", "indice_demanda": "Índice de demanda"})
-                with st.container(border=True):
-                    fig = px.line(trend_frame, x="Mes", y="Índice de demanda", markers=True, color_discrete_sequence=["#2563EB"])
-                    fig.add_hline(y=100, line_dash="dot", annotation_text="Referencia: 100")
-                    fig.update_layout(height=330, margin=dict(t=25, b=20))
-                    st.plotly_chart(fig, width="stretch")
-                insight("Cómo interpretar la línea", "Por encima de 100 hay más demanda en este ejemplo; por debajo, menos. El índice es una escala comparativa, no pesos ni unidades vendidas.")
-                with st.expander("Ver los datos del ejemplo"):
-                    table(trend_frame.to_dict("records"))
+            section_intro("Precios reales del mercado agrícola", "Precios internacionales mensuales de referencia. Ayudan a observar el contexto del sector; no son ventas de AgTech ni precios locales de México.")
+            market = api("GET", "/analisis/mercado", default={})
+            if market.get("available") and market.get("series"):
+                if market.get("status") == "stale":
+                    st.warning(market.get("message", "Se muestran los últimos datos reales guardados; no se pudo actualizar la consulta."))
+                series_by_id = {row["id"]: row for row in market["series"]}
+                a, b = st.columns([2, 1])
+                crop = a.selectbox("Producto agrícola", list(series_by_id), format_func=lambda key: series_by_id[key]["name"])
+                months = b.selectbox("Periodo mostrado", [12, 24, 36], index=1, format_func=lambda n: f"Últimos {n} meses")
+                chosen = series_by_id[crop]
+                if chosen.get("note"):
+                    st.info(chosen["note"])
+                points = chosen["points"][-months:]
+                latest = points[-1]
+                previous = chosen["points"][-2] if len(chosen["points"]) > 1 else None
+                year_ago = chosen["points"][-13] if len(chosen["points"]) > 12 else None
+                monthly = (latest["value"] / previous["value"] - 1) * 100 if previous and previous["value"] else None
+                annual = (latest["value"] / year_ago["value"] - 1) * 100 if year_ago and year_ago["value"] else None
+                a, b, c = st.columns(3)
+                a.metric("Último precio (USD / tonelada)", f"${latest['value']:,.2f}")
+                b.metric("Cambio mensual", number(monthly, " %"))
+                c.metric("Cambio frente al mismo mes del año anterior", number(annual, " %"))
+                st.caption(f"Mes del último dato: {latest['date'][:7]} · Unidad: {chosen.get('unit', market.get('unit', 'USD por tonelada métrica'))}. No incluye flete ni impuestos de una compra particular.")
+                price_frame = pd.DataFrame(points).rename(columns={"date": "Mes", "value": "Precio (USD por tonelada)"})
+                price_frame["Mes"] = pd.to_datetime(price_frame["Mes"])
+                fig = px.line(price_frame, x="Mes", y="Precio (USD por tonelada)", markers=True, color_discrete_sequence=["#13866B"])
+                fig.update_layout(height=350, margin=dict(t=20, b=20), yaxis_tickprefix="$", hovermode="x unified")
+                st.plotly_chart(fig, width="stretch")
+                st.caption("Una variación positiva significa un precio mayor, no necesariamente más demanda. Esta serie no predice ventas de sensores o kits.")
+                st.link_button("Consultar la fuente: Banco Mundial", market["source_url"])
+                st.caption(f"Fuente: {market['source']} · Última consulta (UTC): {market.get('last_checked', 'No disponible')} · Se revisan nuevas publicaciones cada 24 horas al usar este módulo.")
+                with st.expander("Datos y descarga"):
+                    table(price_frame.assign(Mes=price_frame["Mes"].dt.strftime("%Y-%m")).to_dict("records"))
+                    export = price_frame.copy()
+                    export["Fuente"] = market["source_url"]
+                    st.download_button("Descargar precios consultados (CSV)", export.to_csv(index=False).encode("utf-8-sig"), f"precios_{crop}.csv", "text/csv")
             else:
-                empty_state("El ejemplo no está disponible", "Vuelve a abrir este módulo para intentar cargarlo. Puedes consultar las otras dos pestañas mientras tanto.")
+                empty_state("No hay precios disponibles en este momento", market.get("message", "No se pudo consultar la fuente. Vuelve a abrir Finanzas para reintentar; no se sustituyen precios reales por datos inventados."))
 
 if pagina == "Personal y usuarios":
     st.caption("Personal registra a tu equipo y sus sueldos. Cuentas de acceso controla quién puede entrar al sistema.")
@@ -1088,11 +1179,26 @@ if pagina == "Configuración":
     saved_rate = float(config.get("tipo_cambio_usd_mxn", 20.0))
     saved_tax = float(config.get("iva_tasa", 0.16)) * 100
     a, b = st.columns(2)
-    a.metric("Tipo de cambio guardado", f"${saved_rate:,.2f} MXN / USD")
+    a.metric("Tipo de cambio guardado", f"${saved_rate:,.4f} MXN / USD")
     b.metric("IVA guardado", f"{saved_tax:g} %")
-    st.caption("Valores compartidos por todas las sedes. Son supuestos académicos, no cotizaciones en tiempo real.")
+    st.caption("Valores compartidos por todas las sedes. El tipo de cambio automático usa la última referencia publicada, no una cotización de compra o venta de un banco.")
     parameters_tab, calculator_tab, backup_tab = st.tabs(["Parámetros", "Calculadora de importación", "Respaldo de datos"])
     with parameters_tab:
+        automatic_rate = st.toggle("Actualizar tipo de cambio automáticamente", value=config.get("tipo_cambio_automatico", True))
+        st.caption("Se consulta una nueva referencia cada 6 horas mientras usas la aplicación y al volver a abrirla si corresponde. El proveedor publica datos en días hábiles.")
+        if config.get("tipo_cambio_fecha"):
+            st.caption(f"Fecha de la referencia: {config['tipo_cambio_fecha']} · Fuente: {config.get('fuente_tipo_cambio', '')}")
+        else:
+            st.caption(f"Origen del valor guardado: {config.get('fuente_tipo_cambio', 'Manual')}.")
+        if config.get("tipo_cambio_fuente_url"):
+            st.link_button("Consultar fuente del tipo de cambio", config["tipo_cambio_fuente_url"])
+        if config.get("tipo_cambio_estado") in {"stale", "unavailable"}:
+            st.warning(config.get("tipo_cambio_mensaje") or "No se pudo actualizar la referencia. Se conserva el último valor guardado.")
+        if st.button("Actualizar tipo de cambio ahora", disabled=not config.get("tipo_cambio_automatico", True)):
+            with st.spinner("Consultando la última referencia publicada…"):
+                updated_rate = api("POST", "/configuracion/actualizar-tipo-cambio", default={})
+            if updated_rate:
+                finish("Consulta terminada. Revisa la fecha y el estado de actualización del tipo de cambio.")
         section_intro("Valores que usa el sistema", "Consulta sus efectos y abre el formulario sólo cuando necesites cambiarlos.")
         a, b = st.columns(2)
         with a, st.container(border=True):
@@ -1103,14 +1209,17 @@ if pagina == "Configuración":
             st.markdown("**IVA → total de ventas nuevas**")
             st.write(f"A cada $100.00 MXN del catálogo se añaden ${saved_tax:,.2f} MXN de IVA.")
             st.caption("Las ventas y comprobantes anteriores conservan sus importes originales.")
-        with st.expander("Cambiar tipo de cambio e IVA"):
+        with st.expander("Guardar modo de actualización e IVA", expanded=automatic_rate != config.get("tipo_cambio_automatico", True)):
             with st.form("configuracion"):
                 a, b = st.columns(2)
-                rate = a.number_input("Tipo de cambio simulado: MXN por USD", min_value=0.01, max_value=1000.0, value=saved_rate, help="Ejemplo: 20 significa que un dólar equivale a 20 pesos. No se consulta una cotización en vivo.")
+                rate = a.number_input("Tipo de cambio manual: MXN por USD", min_value=0.01, max_value=1000.0, value=saved_rate, disabled=automatic_rate, format="%.4f", help="Sólo se utiliza al desactivar la actualización automática y guardar. Ejemplo: 20 significa veinte pesos por dólar.")
                 tax = b.number_input("IVA (%)", min_value=0.0, max_value=100.0, value=saved_tax, help="Tasa del supuesto académico. Los precios del catálogo no incluyen este impuesto.")
                 st.caption("Los cambios se aplican a todas las sedes al pulsar Guardar parámetros.")
                 if st.form_submit_button("Guardar parámetros", type="primary"):
-                    result = api("PUT", "/configuracion", json={"tipo_cambio_usd_mxn": rate, "iva_tasa": tax / 100})
+                    settings = {"tipo_cambio_automatico": automatic_rate, "iva_tasa": tax / 100}
+                    if not automatic_rate:
+                        settings["tipo_cambio_usd_mxn"] = rate
+                    result = api("PUT", "/configuracion", json=settings)
                     if result:
                         finish("Parámetros guardados. Los comprobantes anteriores mantienen sus importes originales.")
     with calculator_tab:
