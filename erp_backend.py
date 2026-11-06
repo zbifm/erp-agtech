@@ -25,6 +25,7 @@ from contextlib import closing
 import time
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from collections import Counter, defaultdict
 from decimal import Decimal, ROUND_HALF_UP
@@ -1010,6 +1011,24 @@ db_personal = {}
 db_sesiones = {}
 db_config = {"tipo_cambio_usd_mxn":20.0,"iva_tasa":0.16,"modo_demo":True,"fuente_tipo_cambio":"Supuesto manual de demostración; no cotización actual"}
 
+# Las fotografías iniciales se agregan una sola vez. La edición o eliminación
+# posterior del usuario prevalece sobre cualquier reinicio o actualización.
+from erp_product_photos import PRODUCT_PHOTOS
+FOTOS_CATALOGO_INICIAL = PRODUCT_PHOTOS
+
+
+def _inicializar_fotos_catalogo():
+    changed = False
+    for cid, photo in FOTOS_CATALOGO_INICIAL.items():
+        product = db_componentes.get(cid)
+        if product is None or product.get("foto_inicializada_por_catalogo"):
+            continue
+        if not product.get("foto_url"):
+            product.update(photo)
+        product["foto_inicializada_por_catalogo"] = True
+        changed = True
+    return changed
+
 
 def ahora():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -1087,6 +1106,8 @@ def _inicializar():
         saved=conn.execute("SELECT payload FROM erp_state WHERE id=1").fetchone()
         if saved:
             _cargar(json.loads(saved[0]))
+            if _inicializar_fotos_catalogo():
+                conn.execute("UPDATE erp_state SET payload=? WHERE id=1", (json.dumps(_estado(), ensure_ascii=False, allow_nan=False),))
             conn.commit()
             return
         for codigo,user in db_usuarios.items():
@@ -1096,6 +1117,7 @@ def _inicializar():
         for n,(cid,producto) in enumerate(db_componentes.items(),1):
             producto.update({"codigo_barras":f"AGT{n:08d}","foto_url":"","punto_reorden":20,"moneda_origen":"MXN",
                              "costo_origen":producto["costo_unitario"],"gastos_importacion_unitarios":0.0})
+        _inicializar_fotos_catalogo()
         demo=NegocioCreate(nombre="AgTech Texcoco — sede de demostración").model_dump()
         demo["id"]="DEMO_TEXCOCO"
         db_negocios[demo["id"]]=demo
@@ -1162,7 +1184,7 @@ def permiso_ruta(path, method):
         return "tpv"
     if path.startswith("/inventario") and method not in ("GET","HEAD"):
         return "inventario"
-    if path=="/configuracion" and method!="GET":
+    if path.startswith("/configuracion") and method!="GET":
         return "registrar_sede"
     if path=="/negocios" and method=="POST":
         return "registrar_sede"
@@ -1188,11 +1210,37 @@ async def autorizar(request: Request, call_next):
     return await call_next(request)
 
 
+class ProductoCreate(ValidatedModel):
+    nombre: str = Field(min_length=1, max_length=160)
+    categoria: str = Field(min_length=1, max_length=80)
+    especificaciones: str = Field(default="", max_length=1000)
+    costo_unitario: float = Field(default=0, ge=0, le=1e9)
+    precio_publico: float = Field(gt=0, le=1e9)
+    stock_inicial: int = Field(default=0, ge=0, le=1000000, strict=True)
+    punto_reorden: int = Field(default=20, ge=0, le=1000000, strict=True)
+    codigo_barras: str = Field(default="", max_length=60, pattern=r"^[A-Za-z0-9_-]*$")
+    foto_url: str = Field(default="", max_length=1500000)
+    foto_fuente: str = Field(default="", max_length=1000)
+    foto_autor: str = Field(default="", max_length=200)
+    foto_licencia: str = Field(default="", max_length=300)
+    foto_descripcion: str = Field(default="", max_length=500)
+    moneda_origen: str = Field(default="MXN", pattern=r"^(MXN|USD)$")
+    costo_origen: Optional[float] = Field(default=None, ge=0, le=1e9)
+    gastos_importacion_unitarios: float = Field(default=0, ge=0, le=1e9)
+
+
 class ProductoUpdate(ValidatedModel):
+    nombre: Optional[str] = Field(default=None, min_length=1, max_length=160)
+    categoria: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    especificaciones: Optional[str] = Field(default=None, max_length=1000)
     costo_unitario: Optional[float] = Field(default=None, ge=0, le=1e9)
     precio_publico: Optional[float] = Field(default=None, gt=0, le=1e9)
     punto_reorden: Optional[int] = Field(default=None, ge=0, le=1000000, strict=True)
     foto_url: Optional[str] = Field(default=None, max_length=1500000)
+    foto_fuente: Optional[str] = Field(default=None, max_length=1000)
+    foto_autor: Optional[str] = Field(default=None, max_length=200)
+    foto_licencia: Optional[str] = Field(default=None, max_length=300)
+    foto_descripcion: Optional[str] = Field(default=None, max_length=500)
     codigo_barras: Optional[str] = Field(default=None, min_length=1, max_length=60, pattern=r"^[A-Za-z0-9_-]+$")
     moneda_origen: Optional[str] = Field(default=None, pattern=r"^(MXN|USD)$")
     costo_origen: Optional[float] = Field(default=None, ge=0, le=1e9)
@@ -1241,6 +1289,7 @@ class PersonalUpdate(ValidatedModel):
 
 class ConfiguracionUpdate(ValidatedModel):
     tipo_cambio_usd_mxn: Optional[float] = Field(default=None,gt=0,le=1000)
+    tipo_cambio_automatico: Optional[bool] = None
     iva_tasa: Optional[float] = Field(default=None,ge=0,le=1)
 
 
@@ -1317,15 +1366,7 @@ def actualizar_personal(uid:str,datos:PersonalUpdate):
     return db_personal[uid]
 
 
-@app.put("/inventario/componentes/{cid}")
-def editar_producto(cid:str,datos:ProductoUpdate):
-    if cid not in db_componentes:
-        raise HTTPException(404,"Producto no encontrado")
-    updates=datos.model_dump(exclude_none=True)
-    barcode=updates.get("codigo_barras")
-    if barcode and any(k!=cid and v["codigo_barras"]==barcode for k,v in db_componentes.items()):
-        raise HTTPException(409,"Código de barras duplicado")
-    foto=updates.get("foto_url","")
+def validar_foto_producto(foto):
     if foto:
         if foto.startswith(("data:image/png;base64,","data:image/jpeg;base64,")):
             import base64
@@ -1341,8 +1382,75 @@ def editar_producto(cid:str,datos:ProductoUpdate):
                     uploaded.verify()
             except (ValueError, OSError, SyntaxError, Image.DecompressionBombError):
                 raise HTTPException(400,"Foto inválida; use PNG o JPEG de máximo 1 MB y 20 megapíxeles.")
-        elif not foto.startswith("https://"):
-            raise HTTPException(400,"La foto debe ser PNG/JPEG o una URL HTTPS.")
+        else:
+            try:
+                parsed = urlsplit(foto)
+                valid = parsed.scheme == "https" and bool(parsed.hostname) and not parsed.username and not parsed.password
+            except ValueError:
+                valid = False
+            if not valid:
+                raise HTTPException(400,"La foto debe ser PNG/JPEG o una URL HTTPS válida.")
+
+
+def validar_identidad_producto(nombre=None, barcode=None, excluir=None):
+    normalized = " ".join(nombre.casefold().split()) if nombre else None
+    for cid, product in db_componentes.items():
+        if cid == excluir:
+            continue
+        if barcode and product.get("codigo_barras") == barcode:
+            raise HTTPException(409,"Código de barras duplicado")
+        if normalized and " ".join(product["nombre"].casefold().split()) == normalized:
+            raise HTTPException(409,"Ya existe un producto con ese nombre. Añade el modelo o la variante para distinguirlo.")
+
+
+def limpiar_creditos_foto(updates):
+    for key in ("foto_fuente", "foto_autor", "foto_licencia", "foto_descripcion"):
+        if not updates.get("foto_url"):
+            updates[key] = ""
+        else:
+            updates.setdefault(key, "")
+    updates["foto_inicializada_por_catalogo"] = True
+
+
+@app.post("/inventario/componentes", status_code=201)
+def crear_producto(datos:ProductoCreate, request:Request):
+    product = datos.model_dump(exclude_none=True)
+    validar_foto_producto(product["foto_url"])
+    if product["moneda_origen"] == "USD" and datos.costo_origen is None:
+        raise HTTPException(400,"Indica el costo de compra en USD para el producto importado.")
+    cid = "PRD_" + uuid.uuid4().hex.upper()
+    while cid in db_componentes:
+        cid = "PRD_" + uuid.uuid4().hex.upper()
+    barcode = product["codigo_barras"]
+    if not barcode:
+        barcode = "AGT" + uuid.uuid4().hex[:16].upper()
+        while any(p.get("codigo_barras") == barcode for p in db_componentes.values()):
+            barcode = "AGT" + uuid.uuid4().hex[:16].upper()
+    validar_identidad_producto(product["nombre"], barcode)
+    product["codigo_barras"] = barcode
+    product["stock"] = product.pop("stock_inicial")
+    product["costo_origen"] = product.get("costo_origen", product["costo_unitario"])
+    rate = db_config["tipo_cambio_usd_mxn"] if product["moneda_origen"] == "USD" else 1
+    product["costo_unitario"] = dinero(product["costo_origen"] * rate + product["gastos_importacion_unitarios"])
+    product.update({"icono":"📦", "presupuesto_ligado":"NINGUNO", "nivel_tag":"Catálogo", "fecha_alta":ahora()})
+    limpiar_creditos_foto(product)
+    db_componentes[cid] = product
+    if product["stock"]:
+        registrar_movimiento(cid, product["stock"], "Existencia inicial al dar de alta el producto", request.state.usuario["username"])
+    return {"componente_id":cid, **product}
+
+
+@app.put("/inventario/componentes/{cid}")
+def editar_producto(cid:str,datos:ProductoUpdate):
+    if cid not in db_componentes:
+        raise HTTPException(404,"Producto no encontrado")
+    updates=datos.model_dump(exclude_none=True)
+    validar_identidad_producto(updates.get("nombre"), updates.get("codigo_barras"), excluir=cid)
+    if "foto_url" in updates:
+        validar_foto_producto(updates["foto_url"])
+        if updates["foto_url"] != db_componentes[cid].get("foto_url", "") or not updates["foto_url"]:
+            limpiar_creditos_foto(updates)
+        updates["foto_inicializada_por_catalogo"] = True
     producto=db_componentes[cid]
     producto.update(updates)
     if producto["moneda_origen"]=="USD":
@@ -1376,16 +1484,70 @@ def movimientos():
 
 @app.get("/configuracion")
 def configuracion():
+    db_config.setdefault("tipo_cambio_automatico", True)
     return db_config
 
 
 @app.put("/configuracion")
 def cambiar_configuracion(datos:ConfiguracionUpdate):
-    db_config.update(datos.model_dump(exclude_none=True))
+    cambios = datos.model_dump(exclude_none=True)
+    if "tipo_cambio_usd_mxn" in cambios:
+        # Un valor manual explícito se respeta hasta reactivar el modo automático.
+        cambios["tipo_cambio_automatico"] = False
+        cambios.update({"fuente_tipo_cambio": "Valor manual", "tipo_cambio_fecha": "",
+                        "tipo_cambio_estado": "manual", "tipo_cambio_fuente_url": "", "tipo_cambio_mensaje": ""})
+    db_config.update(cambios)
     for producto in db_componentes.values():
         if producto["moneda_origen"]=="USD":
             producto["costo_unitario"]=dinero(producto["costo_origen"]*db_config["tipo_cambio_usd_mxn"]+producto["gastos_importacion_unitarios"])
     return db_config
+
+
+@_atomic_handler
+def _leer_configuracion_cambio():
+    db_config.setdefault("tipo_cambio_automatico", True)
+    return db_config
+
+
+@_atomic_handler
+def _aplicar_cambio_publicado(datos):
+    if not db_config.get("tipo_cambio_automatico", True):
+        return db_config
+    db_config.update({"tipo_cambio_estado": datos.get("status", "unavailable"),
+                      "tipo_cambio_consulta": datos.get("last_checked", ""),
+                      "tipo_cambio_mensaje": datos.get("message", "")})
+    if datos.get("available") and datos.get("rate") and datos.get("date", "") >= db_config.get("tipo_cambio_fecha", ""):
+        db_config.update({"tipo_cambio_usd_mxn": datos["rate"], "tipo_cambio_fecha": datos["date"],
+                          "fuente_tipo_cambio": datos["source"], "tipo_cambio_fuente_url": datos["source_url"]})
+        for producto in db_componentes.values():
+            if producto.get("moneda_origen") == "USD":
+                producto["costo_unitario"] = dinero(producto["costo_origen"] * datos["rate"] + producto["gastos_importacion_unitarios"])
+    return db_config
+
+
+def _consultar_cambio(force=False):
+    config = _leer_configuracion_cambio()
+    if not config.get("tipo_cambio_automatico", True):
+        return {"configuracion": config, "consulta": {"status": "manual"}}
+    from erp_external_data import get_exchange_rate
+    datos = get_exchange_rate(force=force)
+    return {"configuracion": _aplicar_cambio_publicado(datos), "consulta": datos}
+
+
+@app.get("/datos-externos/tipo-cambio")
+def tipo_cambio_externo():
+    return _consultar_cambio()
+
+
+@app.post("/configuracion/actualizar-tipo-cambio")
+def actualizar_tipo_cambio():
+    return _consultar_cambio(force=True)
+
+
+@app.get("/analisis/mercado")
+def mercado_real():
+    from erp_external_data import get_market_trends
+    return get_market_trends()
 
 
 def buscar_venta(folio):
@@ -1456,8 +1618,8 @@ def reportes(negocio_id:str):
         "productos_reorden":sum(p["stock"]<=p["punto_reorden"] for p in db_componentes.values()),
         "ventas_por_cajero":[{"cajero":k,"ventas_netas":dinero(v)} for k,v in cajeros.items()]}
     return {"indicadores":indicadores,"series_mensuales":[{"mes":k,**{n:dinero(v) for n,v in row.items()}} for k,row in sorted(series.items())],
-        "tendencias_simuladas":[{"mes":m,"indice_demanda":v} for m,v in zip(["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"],[80,85,102,120,135,130,115,110,104,100,94,90])],
-        "fuente_tendencias":"Serie sintética de estacionalidad agrícola para demostrar gráficas; no es observación ni pronóstico real.",
+        "mercado_endpoint":"/analisis/mercado",
+        "fuente_tendencias":"Banco Mundial: precios internacionales agrícolas mensuales; consulta independiente de las ventas de esta sede.",
         "limitaciones":["Inventario central compartido entre sedes; ventas y reportes separados por sede.","Importes de ventas netos de IVA; cobros bancarios y facturas son simulados.","El inventario se valora al costo actual; el costo de ventas conserva su valor histórico.","SQLite persiste en el disco del servidor; en alojamiento efímero descargue respaldos antes de reinicios o reconstrucciones."]}
 
 
@@ -1474,7 +1636,10 @@ _inicializar()
 from fastapi.routing import APIRoute
 for _route in app.routes:
     if isinstance(_route,APIRoute):
-        _route.dependant.call=_atomic_handler(_route.endpoint)
+        # Las consultas remotas se realizan fuera del bloqueo de la base.
+        # Su aplicación monetaria sí usa una transacción propia y atómica.
+        if _route.path not in {"/datos-externos/tipo-cambio", "/configuracion/actualizar-tipo-cambio", "/analisis/mercado"}:
+            _route.dependant.call=_atomic_handler(_route.endpoint)
 
 if __name__ == "__main__":
     import uvicorn
