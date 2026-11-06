@@ -711,6 +711,54 @@ def cotizar_combo_personalizado(combo: CotizacionComboRequest):
         "nota_precios":"Precios netos; IVA simulado agregado al subtotal."
     }
 
+def calcular_cotizacion_venta(venta: VentaComboCreate):
+    """Calcula importes y disponibilidad sin reservar ni modificar existencias."""
+    sede = db_negocios.get(venta.negocio_id)
+    if not sede:
+        raise HTTPException(404,"Sede no encontrada")
+    tipo = venta.tipo_venta.lower()
+    descuento = 0.0
+    if tipo in ("estándar","estandar","kit estándar","kit estandar"):
+        ids = KIT_BOM[sede["presupuesto_seleccionado"]]
+        precio = sede["precio_venta_unitario"]
+    elif tipo in ("combo","combo personalizado"):
+        ids = venta.componentes_ids
+        validar_combo(ids)
+        descuento = 0.08 if len(ids)>=4 else 0.0
+        precio = dinero(sum(db_componentes[i]["precio_publico"] for i in ids) * (1-descuento))
+    elif tipo in ("componentes","refacción","refaccion"):
+        ids = venta.componentes_ids
+        if not ids or any(i not in db_componentes for i in ids):
+            raise HTTPException(400,"Seleccione componentes válidos por código.")
+        precio = dinero(sum(db_componentes[i]["precio_publico"] for i in ids))
+    else:
+        raise HTTPException(400,"Tipo de venta desconocido")
+    if venta.metodo_pago.lower() not in ("efectivo","tarjeta","transferencia"):
+        raise HTTPException(400,"Método de pago inválido")
+    cantidades = Counter(ids)
+    disponibles = min(db_componentes[cid]["stock"] // veces for cid, veces in cantidades.items())
+    faltantes = [{"componente_id": cid, "nombre": db_componentes[cid]["nombre"],
+                  "requerido": veces * venta.cantidad, "disponible": db_componentes[cid]["stock"]}
+                 for cid, veces in cantidades.items() if db_componentes[cid]["stock"] < veces * venta.cantidad]
+    costo = dinero(sum(db_componentes[cid]["costo_unitario"] for cid in ids) * venta.cantidad)
+    subtotal = dinero(precio * venta.cantidad)
+    iva = dinero(subtotal*db_config["iva_tasa"])
+    detalle = [{"componente_id":cid,"nombre":db_componentes[cid]["nombre"],"cantidad":n*venta.cantidad,
+                "costo_unitario":db_componentes[cid]["costo_unitario"],"precio_catalogo":db_componentes[cid]["precio_publico"]} for cid,n in cantidades.items()]
+    return {"negocio_id":venta.negocio_id,"tipo_venta":venta.tipo_venta,
+            "item":" + ".join(db_componentes[i]["nombre"] for i in ids),
+            "cantidad":venta.cantidad,"componentes_ids":list(ids),"precio_unitario":dinero(precio),
+            "subtotal":subtotal,"iva":iva,"iva_tasa":db_config["iva_tasa"],"total":dinero(subtotal+iva),
+            "costo_mercancia":costo,"utilidad_bruta":dinero(subtotal-costo),"descuento_pct":descuento*100,
+            "unidades_disponibles":disponibles,"stock_suficiente":not faltantes,"faltantes":faltantes,
+            "detalle":detalle,"nota":"Cotización con precios y existencias actuales; se verifican de nuevo al registrar la venta."}
+
+
+@app.post("/tpv/cotizar-venta", tags=["Inventario y Combos"])
+def cotizar_venta(venta: VentaComboCreate):
+    return calcular_cotizacion_venta(venta)
+
+
 @app.post("/tpv/venta", tags=["Inventario y Combos"])
 def registrar_venta(venta: VentaComboCreate, request: Request):
     sede = db_negocios.get(venta.negocio_id)
@@ -724,39 +772,19 @@ def registrar_venta(venta: VentaComboCreate, request: Request):
     distancia = calcular_distancia_km(sede["latitud"],sede["longitud"],venta.latitud_operador,venta.longitud_operador)
     if distancia > sede["radio_operacion_km"]:
         raise HTTPException(403,"Operación fuera de la geocerca. Coordenadas declaradas/simuladas.")
-    tipo = venta.tipo_venta.lower()
-    if tipo in ("estándar","estandar","kit estándar","kit estandar"):
-        ids = KIT_BOM[sede["presupuesto_seleccionado"]]
-        precio = sede["precio_venta_unitario"]
-    elif tipo in ("combo","combo personalizado"):
-        ids = venta.componentes_ids
-        validar_combo(ids)
-        precio = dinero(sum(db_componentes[i]["precio_publico"] for i in ids) * (0.92 if len(ids)>=4 else 1))
-    elif tipo in ("componentes","refacción","refaccion"):
-        ids = venta.componentes_ids
-        if not ids or any(i not in db_componentes for i in ids):
-            raise HTTPException(400,"Seleccione componentes válidos por código.")
-        precio = dinero(sum(db_componentes[i]["precio_publico"] for i in ids))
-    else:
-        raise HTTPException(400,"Tipo de venta desconocido")
-    if venta.metodo_pago.lower() not in ("efectivo","tarjeta","transferencia"):
-        raise HTTPException(400,"Método de pago inválido")
+    cotizacion = calcular_cotizacion_venta(venta)
+    if not cotizacion["stock_suficiente"]:
+        raise HTTPException(409,f"Stock insuficiente: {cotizacion['faltantes'][0]['nombre']}")
+    ids = cotizacion["componentes_ids"]
     cantidades = Counter(ids)
-    for cid, veces in cantidades.items():
-        if db_componentes[cid]["stock"] < veces * venta.cantidad:
-            raise HTTPException(409,f"Stock insuficiente: {db_componentes[cid]['nombre']}")
-    costo = dinero(sum(db_componentes[cid]["costo_unitario"] for cid in ids) * venta.cantidad)
-    subtotal = dinero(precio * venta.cantidad)
-    iva = dinero(subtotal*db_config["iva_tasa"])
+    subtotal, iva, costo = cotizacion["subtotal"], cotizacion["iva"], cotizacion["costo_mercancia"]
     folio = uuid.uuid4().hex[:12].upper()
-    detalle = [{"componente_id":cid,"nombre":db_componentes[cid]["nombre"],"cantidad":n*venta.cantidad,
-                "costo_unitario":db_componentes[cid]["costo_unitario"],"precio_catalogo":db_componentes[cid]["precio_publico"]} for cid,n in cantidades.items()]
     registro = {"folio":folio,"fecha":ahora(),"negocio_id":venta.negocio_id,"nombre_sede":sede["nombre"],
-        "vendedor":username,"tipo_venta":venta.tipo_venta,"item":" + ".join(db_componentes[i]["nombre"] for i in ids),
-        "cantidad":venta.cantidad,"metodo_pago":venta.metodo_pago.capitalize(),"precio_unitario":dinero(precio),
+        "vendedor":username,"tipo_venta":venta.tipo_venta,"item":cotizacion["item"],
+        "cantidad":venta.cantidad,"metodo_pago":venta.metodo_pago.capitalize(),"precio_unitario":cotizacion["precio_unitario"],
         "ingreso_bruto":subtotal,"subtotal":subtotal,"iva":iva,"iva_tasa":db_config["iva_tasa"],"total":dinero(subtotal+iva),
         "costo_mercancia":costo,"utilidad_bruta":dinero(subtotal-costo),"distancia_operacion_km":round(distancia,2),
-        "detalle":detalle,"idempotency_key":venta.idempotency_key,"modo_pago":"Simulación: no se procesa ningún cobro bancario"}
+        "detalle":cotizacion["detalle"],"idempotency_key":venta.idempotency_key,"modo_pago":"Simulación: no se procesa ningún cobro bancario"}
     for cid,n in cantidades.items():
         db_componentes[cid]["stock"] -= n*venta.cantidad
         registrar_movimiento(cid,-n*venta.cantidad,"Venta "+folio,username)
