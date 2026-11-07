@@ -10,52 +10,18 @@ from datetime import datetime, timezone
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import graphviz
 import folium
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 
 from erp_api_client import APIClient
+from erp_overview import elegir_perfil, encabezado_inicio, estilos_inicio, portada_acceso
+from erp_theme import aplicar_tema
 
 st.set_page_config(page_title="ERP AgTech · Gestión integral", page_icon="🌱", layout="wide")
 
-st.markdown("""<style>
-.block-container {max-width:1440px; padding-top:5rem; padding-bottom:3rem;}
-.agtech-hero {background:linear-gradient(120deg,#123d35,#176751);color:#fff;
- padding:1.65rem 1.9rem;border-radius:18px;margin-bottom:1.5rem;}
-.agtech-hero h1 {color:#fff;font-size:clamp(1.8rem,3vw,2.6rem);padding:.25rem 0 .5rem;}
-.agtech-hero p {color:#e1f3eb;max-width:860px;margin:0;line-height:1.6;}
-.agtech-eyebrow {font-size:.76rem;font-weight:700;letter-spacing:.11em;color:#b5e9d3;}
-.agtech-hero--compact {padding:1rem 1.4rem;border-radius:14px;margin-bottom:.6rem;}
-.agtech-hero--compact h1 {font-size:clamp(1.65rem,2.5vw,2rem);padding:0 0 .35rem;}
-.agtech-hero--compact .agtech-eyebrow {display:none;}
-.block-container h3 {font-size:1.25rem;line-height:1.4;padding-top:.35rem;}
-.agtech-insight {border-left:4px solid #3980a2;border-radius:10px;padding:1rem 1.1rem;
- background:#edf6fb;color:#193c50;margin:.25rem 0 .8rem;}
-.agtech-insight--success {border-color:#13866b;background:#eaf6f0;color:#164c3e;}
-.agtech-insight--warning {border-color:#b87818;background:#fff6e5;color:#654516;}
-.agtech-insight strong,.agtech-empty strong {display:block;font-size:1.05rem;margin-bottom:.25rem;}
-.agtech-insight p,.agtech-empty p {margin:0;line-height:1.55;font-size:.94rem;}
-.agtech-empty {border:1px dashed #81958e70;border-radius:12px;padding:1.4rem;margin:.5rem 0 1rem;}
-.agtech-task-icon {font-size:1.55rem;line-height:1.2;margin-bottom:.5rem;}
-[data-testid="stMetric"] {border:1px solid #879a8e44;border-radius:14px;padding:1rem;}
-[data-testid="stMetricLabel"] {height:auto;min-height:1.4rem;}
-[data-testid="stMetricLabel"] [data-testid="stMarkdownContainer"], [data-testid="stMetricLabel"] p {white-space:normal;overflow:visible;text-overflow:clip;}
-[data-testid="stMetricValue"] {font-size:clamp(1.35rem,2.1vw,2rem);}
-[data-testid="stMetricValue"] > div {white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;}
-[data-testid="stSidebar"] h1 {font-size:1.65rem;}
-.st-key-navegacion_principal {gap:.25rem;}
-.st-key-navegacion_principal button {justify-content:flex-start;text-align:left;}
-.st-key-navegacion_principal button > div {justify-content:flex-start;padding-left:.75rem;}
-.st-key-navegacion_principal button p {text-align:left;}
-.st-key-navegacion_principal [data-testid="stMarkdownContainer"] {margin-bottom:0;}
-.st-key-navegacion_principal .agtech-nav-group {font-size:.72rem;font-weight:700;
- letter-spacing:.09em;text-transform:uppercase;opacity:.75;padding:.6rem 0 .15rem;margin:0;}
-.stButton button,.stDownloadButton button {border-radius:9px;min-height:2.6rem;}
-.stTabs [role="tab"] {font-weight:600;}
-@media(max-width:640px){.block-container{padding:5rem 1rem 2rem;}.agtech-hero{padding:1.2rem;}}
-</style>""", unsafe_allow_html=True)
+aplicar_tema()
 
 for key, value in {"autenticado": False, "token": "", "username": "", "permisos": [],
                    "operador_lat": 19.5119, "operador_lon": -98.8829,
@@ -133,9 +99,24 @@ def number(value, suffix=""):
     return "No definida" if value is None else f"{value:,.2f}{suffix}"
 
 
-def hero(title, description, *, compact=False):
-    style = "agtech-hero agtech-hero--compact" if compact else "agtech-hero"
-    st.markdown(f'<div class="{style}"><div class="agtech-eyebrow">AGTECH · DEMOSTRACIÓN ACADÉMICA</div><h1>{html.escape(title)}</h1><p>{html.escape(description)}</p></div>', unsafe_allow_html=True)
+def encabezado_modulo(grupo, titulo, descripcion):
+    st.markdown(
+        '<header class="agtech-hero agtech-hero--compact">'
+        f'<div class="agtech-eyebrow">{html.escape(grupo)}</div>'
+        f'<h1>{html.escape(titulo)}</h1><p>{html.escape(descripcion)}</p></header>',
+        unsafe_allow_html=True,
+    )
+
+
+def mostrar_grafica(figura):
+    figura.update_layout(
+        font_family='"Source Sans 3", "Source Sans Pro", sans-serif',
+        font_size=14, bargap=0.28, paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)", hoverlabel=dict(align="left"),
+    )
+    figura.update_xaxes(automargin=True)
+    figura.update_yaxes(automargin=True)
+    st.plotly_chart(figura, width="stretch", config={"displaylogo": False})
 
 
 def section_intro(title, description):
@@ -228,7 +209,7 @@ def sincronizar_tipo_cambio(mostrar=False):
         st.warning("No se pudo consultar el dólar. Vuelve a abrir este módulo para reintentar.")
         return
     automatico = config.get("tipo_cambio_automatico", True)
-    with st.container(border=True):
+    with st.container(border=True, key="cotizacion_actual"):
         value_col, detail_col = st.columns([1, 2], vertical_alignment="center")
         value_col.metric("Dólar a peso mexicano", f"${config['tipo_cambio_usd_mxn']:,.4f} MXN",
                          help="Pesos mexicanos por cada dólar estadounidense. Se usa en los costos de productos comprados en USD.")
@@ -254,14 +235,16 @@ def sincronizar_tipo_cambio(mostrar=False):
 
 
 if not st.session_state.autenticado:
-    hero("Gestiona tu negocio con AgTech", "Vende, controla existencias y explora la rentabilidad desde un mismo lugar.")
-    left, right = st.columns([1, 1])
+    estilos_inicio()
+    left, right = st.columns([1.24, 1], gap="medium", vertical_alignment="center")
     with left:
-        st.subheader("Entrar al sistema")
-        st.caption("Para explorar todas las funciones usa gerente y la contraseña 123.")
-        with st.form("login"):
-            username = st.text_input("Usuario", placeholder="gerente")
-            password = st.text_input("Contraseña", type="password")
+        portada_acceso()
+    with right, st.container(border=True, key="acceso_erp"):
+        st.header("Entrar al sistema", anchor=False)
+        st.caption("Escribe tus datos o elige un perfil de demostración.")
+        with st.form("login", border=False):
+            username = st.text_input("Usuario", placeholder="gerente", key="acceso_usuario", autocomplete="username")
+            password = st.text_input("Contraseña", type="password", key="acceso_clave", autocomplete="current-password")
             if st.form_submit_button("Iniciar sesión", type="primary", width="stretch"):
                 auth = api("POST", "/auth/login", json={"username": username.strip(), "password": password})
                 if auth:
@@ -272,17 +255,20 @@ if not st.session_state.autenticado:
                     st.session_state.icono_rol = auth.get("icono", "👤")
                     st.session_state.permisos = auth["permisos"]
                     st.rerun()
-    with right:
-        st.subheader("Elige un perfil de prueba")
-        st.table(pd.DataFrame([
-            {"Usuario": "gerente", "Contraseña": "123", "Área": "Administración · acceso completo"},
-            {"Usuario": "cajero", "Contraseña": "123", "Área": "Ventas · caja y comprobantes"},
-            {"Usuario": "ingeniero", "Contraseña": "123", "Área": "Ingeniería · inventario y análisis"},
-        ]))
-        st.caption("Estos accesos son exclusivamente de la demostración; utiliza datos ficticios. El gerente puede registrar usuarios individuales.")
+        with st.container(key="perfiles_demo"):
+            st.markdown("**Perfiles de demostración**")
+            perfiles = [
+                ("gerente", "Administración y acceso a todos los módulos"),
+                ("cajero", "Ventas, caja y comprobantes"),
+                ("ingeniero", "Inventario, finanzas y presupuestos"),
+            ]
+            for column, (user, area) in zip(st.columns(3), perfiles):
+                column.button(user.capitalize(), key=f"perfil_demo_{user}", help=area,
+                              on_click=elegir_perfil, args=(user,), width="stretch")
+            st.caption("Los tres perfiles usan la contraseña 123. Gerente tiene acceso completo.")
     with st.expander("Qué puedes demostrar con este sistema"):
         st.markdown("**Ventas e inventario:** registra ventas, descuenta productos y descarga comprobantes.\n\n**Ubicación:** marca una posición en el mapa y demuestra el bloqueo fuera del radio.\n\n**Finanzas:** compara lo vendido con escenarios de inversión y costos.")
-        st.info("GPS, lector, pagos y facturación fiscal se simulan. El programa sí guarda las operaciones que registres.")
+        st.info("Usa datos ficticios. El ERP registra las operaciones y simula el GPS, el lector, los pagos y la facturación fiscal.")
     st.stop()
 
 me = api("GET", "/auth/me")
@@ -295,7 +281,10 @@ negocios_db = api("GET", "/negocios", default={})
 datos_presupuestos = api("GET", "/ingenieria/presupuestos-tabulares", default={}) if ("ingenieria" in permisos_usuario or "registrar_sede" in permisos_usuario) else {}
 
 with st.sidebar:
-    st.title("🌱 AgTech")
+    st.markdown(
+        '<div class="agtech-brand"><span class="agtech-brand-mark" aria-hidden="true"></span>'
+        '<span>AgTech</span></div>', unsafe_allow_html=True,
+    )
     if negocios_db:
         nueva_sede = st.session_state.pop("seleccionar_sede_nueva", None)
         if nueva_sede in negocios_db:
@@ -354,9 +343,8 @@ descriptions = {
     "Configuración": "Consulta el tipo de cambio, ajusta el IVA y conserva una copia de tus datos.",
 }
 grupo_activo = next(group for group, items in grupos_visibles if any(item[0] == pagina for item in items))
-if grupo_activo:
-    st.caption(f"Estás en: {grupo_activo} / {ETIQUETAS_MODULOS[pagina]}")
-hero(ETIQUETAS_MODULOS[pagina], descriptions[pagina], compact=True)
+if pagina != "Inicio":
+    encabezado_modulo(grupo_activo, ETIQUETAS_MODULOS[pagina], descriptions[pagina])
 sincronizar_tipo_cambio(mostrar=pagina in {"Inventario y productos", "Finanzas y tendencias"})
 # Consulta el catálogo después de actualizar los costos de importación.
 datos_inventario = api("GET", "/inventario/componentes", default={})
@@ -365,9 +353,10 @@ if st.session_state.get("flash"):
     st.success(st.session_state.pop("flash"))
 
 if pagina == "Inicio":
+    estilos_inicio()
+    encabezado_inicio(datos_sucursal)
     low_products = [p for p in catalogo_comp.values() if p["stock"] <= p.get("punto_reorden", 0)]
     if datos_sucursal:
-        st.caption(f"Tu sede activa: {datos_sucursal['nombre']} · {st.session_state.rol}")
         a, b, c = st.columns(3)
         a.metric("Productos en catálogo", len(catalogo_comp))
         b.metric("Productos por reabastecer", len(low_products))
@@ -376,23 +365,25 @@ if pagina == "Inicio":
         accion_reorden = "Abre Inventario para revisar los productos y registrar una entrada cuando recibas mercancía." if "inventario" in permisos_usuario else "Avisa al gerente para que revise los productos por reabastecer."
         insight(f"Requieren atención: {len(low_products)} productos", accion_reorden, "warning")
     elif catalogo_comp:
-        insight("Inventario sin alertas de reabastecimiento", "Todos los productos están por encima de su punto de reorden. Elige abajo la tarea que necesitas hacer.", "success")
+        insight("Inventario sin alertas de reabastecimiento", "Todos los productos están por encima de su punto de reorden.", "success")
     else:
         empty_state("El catálogo está vacío", "Solicita al gerente que revise el catálogo antes de registrar una venta.")
-    section_intro("¿Qué quieres hacer?", "Abre una tarea. La sede elegida se mantiene al cambiar de módulo.")
+    st.subheader("Tareas frecuentes")
     shortcuts = [("Punto de venta", "Registrar una venta", "Elige productos, revisa el total y genera un ticket."),
                  ("Inventario y productos", "Revisar inventario", "Consulta existencias, precios y productos por reabastecer."),
                  ("Finanzas y tendencias", "Consultar finanzas", "Revisa ventas registradas y prueba escenarios de inversión."),
                  ("Ingeniería y presupuestos", "Comparar presupuestos", "Explora equipos, costos y procesos de producción.")]
     visible_shortcuts = [item for item in shortcuts if item[0] in menu]
     card_columns = 2 if len(visible_shortcuts) == 4 else max(1, min(3, len(visible_shortcuts)))
-    for start in range(0, len(visible_shortcuts), card_columns):
-        for column, (module, label, description) in zip(st.columns(min(card_columns, len(visible_shortcuts) - start)), visible_shortcuts[start:start + card_columns]):
-            with column, st.container(border=True):
-                st.markdown(f"**{label}**")
-                st.caption(description)
-                task_icon = next(icon for _, items in NAVEGACION for item_module, _, icon, _ in items if item_module == module)
-                st.button(f"Abrir {ETIQUETAS_MODULOS[module].lower()}", icon=f":material/{task_icon}:", key=f"atajo_{module}", on_click=ir_a_modulo, args=(module,), width="stretch")
+    with st.container(key="tareas_inicio"):
+        for start in range(0, len(visible_shortcuts), card_columns):
+            grupo = visible_shortcuts[start:start + card_columns]
+            for column, (module, label, description) in zip(st.columns(len(grupo)), grupo):
+                with column, st.container(border=True):
+                    task_icon = next(icon for _, items in NAVEGACION for item_module, _, icon, _ in items if item_module == module)
+                    st.markdown(f":material/{task_icon}: **{label}**")
+                    st.caption(description)
+                    st.button(f"Abrir {ETIQUETAS_MODULOS[module].lower()}", icon=":material/arrow_forward:", key=f"atajo_{module}", on_click=ir_a_modulo, args=(module,))
     with st.expander("Guía rápida para la demostración", expanded=False):
         st.markdown("1. Usa la sede de ejemplo o registra otra en **Administración → Sedes y ubicación**.\n2. Revisa productos y existencias en **Operación → Inventario**.\n3. En **Operación → Punto de venta**, alterna dentro/fuera del radio para demostrar el bloqueo.\n4. Vuelve dentro, revisa el total y registra una venta.\n5. Descarga el ticket y consulta **Análisis → Finanzas**.")
         st.caption("Las opciones disponibles dependen de tu perfil. El gerente puede explorar todos los módulos.")
@@ -942,10 +933,9 @@ if pagina == "Finanzas y tendencias":
                 with st.container(border=True):
                     section_intro("Ventas y resultado por mes", "Compara lo vendido, el costo de los productos y la diferencia entre ambos.")
                     fig = px.bar(frame, x="Mes", y=["Ventas sin IVA", "Costo de ventas", "Utilidad bruta"], barmode="group",
-                        labels={"value": "Importe (MXN)", "variable": "Concepto"},
-                        color_discrete_map={"Ventas sin IVA": "#2563EB", "Costo de ventas": "#F59E0B", "Utilidad bruta": "#13866B"})
+                        labels={"value": "Importe (MXN)", "variable": "Concepto"})
                     fig.update_layout(legend_title_text="", yaxis_tickprefix="$", hovermode="x unified", height=340, margin=dict(t=15, b=30), legend=dict(orientation="h", y=-0.22))
-                    st.plotly_chart(fig, width="stretch")
+                    mostrar_grafica(fig)
                 with st.expander("Ver cifras mensuales y ventas por cajero"):
                     table(frame.to_dict("records"))
                     st.markdown("**Ventas por cajero · sin IVA**")
@@ -1011,10 +1001,9 @@ if pagina == "Finanzas y tendencias":
                 with st.container(border=True):
                     section_intro("¿En qué se van los ingresos?", "Los ingresos deben alcanzar para cubrir ambos tipos de costo.")
                     bars_frame = pd.DataFrame({"Concepto": ["Ingresos", "Costos variables", "Costos fijos"], "MXN por mes": [units * price, units * cost, fixed]})
-                    bars = px.bar(bars_frame, x="Concepto", y="MXN por mes", color="Concepto",
-                        color_discrete_map={"Ingresos": "#13866B", "Costos variables": "#F59E0B", "Costos fijos": "#64748B"})
+                    bars = px.bar(bars_frame, x="Concepto", y="MXN por mes", color="Concepto")
                     bars.update_layout(showlegend=False, yaxis_tickprefix="$", height=300, margin=dict(t=15, b=25))
-                    st.plotly_chart(bars, width="stretch")
+                    mostrar_grafica(bars)
                 if st.session_state.get("dictamen") and st.session_state.get("dictamen_escenario") == (sucursal_activa_id, units, discount, benchmark, investment, fixed, cost, price):
                     with st.container(border=True):
                         section_intro("Explicación de tu escenario", "Interpretación automática basada en los valores que acabas de probar.")
@@ -1060,9 +1049,10 @@ if pagina == "Finanzas y tendencias":
                 st.caption(f"Mes del último dato: {latest['date'][:7]} · Unidad: {chosen.get('unit', market.get('unit', 'USD por tonelada métrica'))}. No incluye flete ni impuestos de una compra particular.")
                 price_frame = pd.DataFrame(points).rename(columns={"date": "Mes", "value": "Precio (USD por tonelada)"})
                 price_frame["Mes"] = pd.to_datetime(price_frame["Mes"])
-                fig = px.line(price_frame, x="Mes", y="Precio (USD por tonelada)", markers=True, color_discrete_sequence=["#13866B"])
+                fig = px.line(price_frame, x="Mes", y="Precio (USD por tonelada)", markers=True)
+                fig.update_traces(line_width=3, marker_size=7)
                 fig.update_layout(height=350, margin=dict(t=20, b=20), yaxis_tickprefix="$", hovermode="x unified")
-                st.plotly_chart(fig, width="stretch")
+                mostrar_grafica(fig)
                 st.caption("Una variación positiva significa un precio mayor, no necesariamente más demanda. Esta serie no predice ventas de sensores o kits.")
                 st.link_button("Consultar la fuente: Banco Mundial", market["source_url"])
                 st.caption(f"Fuente: {market['source']} · Última consulta (UTC): {market.get('last_checked', 'No disponible')} · Se revisan nuevas publicaciones cada 24 horas al usar este módulo.")
@@ -1272,10 +1262,9 @@ if pagina == "Configuración":
         c.metric("Costo unitario estimado sin IVA", money(converted + freight + extra))
         costs_chart = pd.DataFrame({"Concepto": ["Compra en pesos", "Flete", "Otros gastos"], "Costo (MXN)": [converted, freight, extra]})
         if converted + freight + extra > 0:
-            fig = px.bar(costs_chart, x="Costo (MXN)", y="Concepto", orientation="h", color="Concepto",
-                         color_discrete_sequence=["#13866B", "#527A8D", "#D79B36"])
+            fig = px.bar(costs_chart, x="Costo (MXN)", y="Concepto", orientation="h", color="Concepto")
             fig.update_layout(showlegend=False, height=240, margin=dict(l=0, r=10, t=10, b=0), xaxis_tickprefix="$", yaxis_title="")
-            st.plotly_chart(fig, width="stretch")
+            mostrar_grafica(fig)
         with st.expander("Aplicar este cálculo a un producto"):
             st.markdown("1. Abre **Operación → Inventario → Editar producto**.\n2. Despliega **Origen y costo de importación** y elige USD.\n3. Captura el precio original en dólares; suma flete y otros gastos en pesos.\n4. Pulsa **Aplicar origen y recalcular costo**.")
     with backup_tab:
@@ -1326,9 +1315,9 @@ if pagina == "Ingeniería y presupuestos":
                     section_intro("¿En qué se invierte el dinero?", "Cada barra suma maquinaria, instalaciones y productos del lote inicial.")
                     comparison = pd.DataFrame([{"Alternativa": nombre_presupuesto(p["id_presupuesto"]), "Maquinaria": p["inversion_maquinaria_mxn"], "Almacén y planta": p["inversion_almacenamiento_planta_mxn"] + p["inversion_produccion_instalacion_mxn"], "Inventario de arranque": p["costo_inventario_inicial_mxn"]} for p in budgets])
                     fig = px.bar(comparison, x="Alternativa", y=["Maquinaria", "Almacén y planta", "Inventario de arranque"], barmode="stack",
-                        labels={"value": "Inversión (MXN)", "variable": "Concepto"}, color_discrete_sequence=["#2563EB", "#13866B", "#F59E0B"])
+                        labels={"value": "Inversión (MXN)", "variable": "Concepto"})
                     fig.update_layout(legend_title_text="", yaxis_tickprefix="$", height=360, margin=dict(t=15, b=25), legend=dict(orientation="h", y=-0.25))
-                    st.plotly_chart(fig, width="stretch")
+                    mostrar_grafica(fig)
                     st.caption("El inventario de arranque forma parte de la inversión, pero no es un activo fijo.")
                 with st.expander("Ver comparación completa y criterios de evaluación"):
                     comparison_rows = [{("Inversión inicial total (MXN)" if k == "CAPEX Total (MXN)" else k): v for k, v in row.items()} for row in datos_presupuestos.get("resumen_disparidad", [])]
@@ -1381,9 +1370,9 @@ if pagina == "Ingeniería y presupuestos":
                     with st.container(border=True):
                         section_intro("Tiempo por etapa", "Lee de arriba hacia abajo para seguir el orden de producción.")
                         step_frame = pd.DataFrame(step_chart_rows)
-                        step_chart = px.bar(step_frame, x="Minutos", y="Etapa", orientation="h", text="Minutos", color_discrete_sequence=["#13866B"])
+                        step_chart = px.bar(step_frame, x="Minutos", y="Etapa", orientation="h", text="Minutos")
                         step_chart.update_layout(yaxis=dict(autorange="reversed", title=""), height=max(300, len(step_chart_rows) * 48), margin=dict(t=15, b=20), showlegend=False)
-                        st.plotly_chart(step_chart, width="stretch")
+                        mostrar_grafica(step_chart)
                         if len(step_chart_rows) != len(steps):
                             st.caption("La gráfica incluye sólo etapas con duración válida. Revisa la tabla para ver el resto.")
                 else:
@@ -1393,12 +1382,12 @@ if pagina == "Ingeniería y presupuestos":
                 with st.expander("Ver diagrama técnico del proceso"):
                     st.caption("Las flechas indican el recorrido; los rombos marcan decisiones y revisiones de calidad.")
                     dot = graphviz.Digraph(comment="Proceso de producción simulado")
-                    dot.attr(bgcolor="#F8FAFC", rankdir="TB")
+                    dot.attr(bgcolor="#F6F5ED", pad="0.25", rankdir="TB")
                     dot.attr("node", fontname="sans-serif", fontcolor="#FFFFFF", style="filled,rounded")
                     dot.attr("edge", color="#475569", fontcolor="#475569", fontname="sans-serif", fontsize="11")
-                    shape_colors = {"oval": "#2563EB", "box": "#334155", "diamond": "#9A3412", "parallelogram": "#047857"}
+                    shape_colors = {"oval": "#3A7583", "box": "#304F47", "diamond": "#9A3412", "parallelogram": "#047857"}
                     for nodo in flujo_data.get("nodos", []):
-                        dot.node(nodo["id"], nodo["label"], shape=nodo["shape"], fillcolor=shape_colors.get(nodo["shape"], "#334155"), color="#64748B")
+                        dot.node(nodo["id"], nodo["label"], shape=nodo["shape"], fillcolor=shape_colors.get(nodo["shape"], "#304F47"), color="#68745F")
                     for arista in flujo_data.get("aristas", []):
                         dot.edge(arista["origen"], arista["destino"], label=arista["label"])
                     st.graphviz_chart(dot, width="stretch")
@@ -1420,9 +1409,9 @@ if pagina == "Ingeniería y presupuestos":
                 cost_frame = pd.DataFrame(monthly_rows).groupby("Categoría", as_index=False)["Costo Total Mensual (MXN)"].sum()
                 with st.container(border=True):
                     section_intro("Distribución del gasto mensual", "Compara el presupuesto de sueldos con los otros gastos de operación.")
-                    cost_chart = px.bar(cost_frame, x="Categoría", y="Costo Total Mensual (MXN)", color="Categoría", color_discrete_sequence=["#2563EB", "#13866B"])
+                    cost_chart = px.bar(cost_frame, x="Categoría", y="Costo Total Mensual (MXN)", color="Categoría")
                     cost_chart.update_layout(showlegend=False, height=290, yaxis_tickprefix="$", margin=dict(t=15, b=20))
-                    st.plotly_chart(cost_chart, width="stretch")
+                    mostrar_grafica(cost_chart)
                 with st.expander("Ver puestos, cantidades y gastos mensuales"):
                     table(monthly_rows)
                     st.caption("OPEX significa gastos de operación. Los sueldos de esta tabla son referencias del ejercicio, independientes del personal registrado.")
@@ -1432,9 +1421,9 @@ if pagina == "Ingeniería y presupuestos":
                 with st.container(border=True):
                     section_intro("Energía estimada por línea", "La comparación usa los equipos y tiempos de cada presupuesto; no hay sensores conectados.")
                     energy_frame = pd.DataFrame([{"Línea": label, "Energía (kWh/mes)": sum(row.get(key, 0) for row in consumption)} for label, key in [("Económica", "kwh_p1"), ("Objetivo", "kwh_p2"), ("Premium", "kwh_p3")]])
-                    energy_chart = px.bar(energy_frame, x="Línea", y="Energía (kWh/mes)", color="Línea", color_discrete_sequence=["#64748B", "#13866B", "#2563EB"])
+                    energy_chart = px.bar(energy_frame, x="Línea", y="Energía (kWh/mes)", color="Línea")
                     energy_chart.update_layout(showlegend=False, height=290, margin=dict(t=15, b=20))
-                    st.plotly_chart(energy_chart, width="stretch")
+                    mostrar_grafica(energy_chart)
                     st.caption("kW mide potencia; kWh mide energía consumida durante un periodo.")
                 with st.expander("Ver consumo por equipo"):
                     table([{"Equipo": row["equipo"], "Económica (kWh/mes)": row["kwh_p1"], "Objetivo (kWh/mes)": row["kwh_p2"], "Premium (kWh/mes)": row["kwh_p3"]} for row in consumption])
