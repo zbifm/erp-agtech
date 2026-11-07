@@ -5,6 +5,7 @@ import io
 import json
 import math
 import uuid
+from datetime import datetime, timezone
 
 import streamlit as st
 import pandas as pd
@@ -213,12 +214,43 @@ def creditos_foto(product):
 
 
 @st.fragment(run_every=300)
-def sincronizar_tipo_cambio():
+def sincronizar_tipo_cambio(mostrar=False):
     # Revisa la caché al entrar y cada cinco minutos con la sesión abierta.
     # El servicio consulta al proveedor como máximo cada seis horas.
     result = api("GET", "/datos-externos/tipo-cambio", default={}, quiet=True)
     if result:
         st.session_state.cambio_externo = result
+    if not mostrar:
+        return
+    cached = result or st.session_state.get("cambio_externo", {})
+    config = cached.get("configuracion", {})
+    if not config or not config.get("tipo_cambio_usd_mxn"):
+        st.warning("No se pudo consultar el dólar. Vuelve a abrir este módulo para reintentar.")
+        return
+    automatico = config.get("tipo_cambio_automatico", True)
+    with st.container(border=True):
+        value_col, detail_col = st.columns([1, 2], vertical_alignment="center")
+        value_col.metric("Dólar a peso mexicano", f"${config['tipo_cambio_usd_mxn']:,.4f} MXN",
+                         help="Pesos mexicanos por cada dólar estadounidense. Se usa en los costos de productos comprados en USD.")
+        with detail_col:
+            st.markdown("**Equivalencia de 1 USD**")
+            if automatico:
+                st.caption(f"Fecha de la referencia: {config.get('tipo_cambio_fecha') or 'No disponible'} · {config.get('fuente_tipo_cambio', 'Fuente no disponible')}")
+                consulta = config.get("tipo_cambio_consulta")
+                try:
+                    fecha_consulta = datetime.fromisoformat(str(consulta).replace("Z", "+00:00"))
+                    if fecha_consulta.tzinfo is None:
+                        fecha_consulta = fecha_consulta.replace(tzinfo=timezone.utc)
+                    consulta = fecha_consulta.astimezone(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+                except (TypeError, ValueError):
+                    consulta = "Sin consulta registrada"
+                st.caption(f"Última consulta: {consulta}. Revisión automática cada 6 horas durante el uso.")
+            else:
+                st.caption("Valor manual fijado en Configuración. La actualización automática está desactivada; no tiene fecha de referencia del proveedor.")
+        if not result:
+            st.warning("No se pudo comprobar la actualización. Se muestra el último valor consultado en esta sesión.")
+        elif automatico and config.get("tipo_cambio_estado") in {"stale", "unavailable"}:
+            st.warning(config.get("tipo_cambio_mensaje") or "No se pudo actualizar la fuente. Se conserva el último valor disponible con su fecha.")
 
 
 if not st.session_state.autenticado:
@@ -259,10 +291,7 @@ if not me:
 st.session_state.permisos = me.get("permisos", st.session_state.permisos)
 st.session_state.rol = me.get("rol", st.session_state.rol)
 permisos_usuario = st.session_state.permisos
-sincronizar_tipo_cambio()
 negocios_db = api("GET", "/negocios", default={})
-datos_inventario = api("GET", "/inventario/componentes", default={})
-catalogo_comp = datos_inventario.get("catalogo_diccionario", {})
 datos_presupuestos = api("GET", "/ingenieria/presupuestos-tabulares", default={}) if ("ingenieria" in permisos_usuario or "registrar_sede" in permisos_usuario) else {}
 
 with st.sidebar:
@@ -328,6 +357,10 @@ grupo_activo = next(group for group, items in grupos_visibles if any(item[0] == 
 if grupo_activo:
     st.caption(f"Estás en: {grupo_activo} / {ETIQUETAS_MODULOS[pagina]}")
 hero(ETIQUETAS_MODULOS[pagina], descriptions[pagina], compact=True)
+sincronizar_tipo_cambio(mostrar=pagina in {"Inventario y productos", "Finanzas y tendencias"})
+# Consulta el catálogo después de actualizar los costos de importación.
+datos_inventario = api("GET", "/inventario/componentes", default={})
+catalogo_comp = datos_inventario.get("catalogo_diccionario", {})
 if st.session_state.get("flash"):
     st.success(st.session_state.pop("flash"))
 
